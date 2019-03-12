@@ -1,0 +1,455 @@
+---
+title: "Introduction to Spatial Data Analysis in R"
+author: "Marley Buchman"
+date: "2/5/2019"
+output: 
+  html_document:
+    code_folding: 'show'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, eval = FALSE)
+```
+
+## Getting Started
+
+Welcome to the Portland R User Group's Introduction to Spatial Data Analysis in R workshop. I will be introducing some of the common tools in R used to complete GIS tasks or spatial data analyses. The target audience for this workshop are those who have some familiarity with R programming, particularly with the `tidyverse`, but haven't ever worked with spatial data before. 
+
+If you have any questions during this workshop don't hesitate to ask, but unfortunately there is a good chance that answer could be that "I don't know". If anybody here is a cartographer or a more experienced spatial data analyst please stop me if I misrepresent or misdescribe a spatial concept. 
+
+GIS stands for a geographic information system, and it is a system designed to work with and analyze spatial data. I am going to do my best to avoid discussing any of the underlying theory or methodology for how these systems are created, and instead focus on an applied workflow that should map well to many spatial data tasks. However, we first need to discuss an important component of working with spatial data and that is the CRS (cooridnate reference system). The CRS details how a the three dimensional surface of the Earth is projected into two dimensions. This has important implications for when questions of spatial relations arise, i.e. how far is this point away from another point. 
+
+For this analysis we will be relying on four packages, all of which are quite popular for spatial data workflows. The first package is `dplyr` which will be used for general data wrangling and doesn't have any specific spatial application. The primary package we will use in this analysis is `sf` which stands for simple features. This is a newer package in the R spatial ecosystem and has been developed to work within the principles and syntax of the tidyverse. We will also use `ggplot2` for making static maps, and `leaflet` for creating interactive maps. Most of the material I will cover is available in the documentation for `sf` which can be found [here](https://r-spatial.github.io/sf/articles/sf1.html). There is also the book [Geocomputation with R](https://geocompr.robinlovelace.net) by Lovelace, Nowosad, and Muenchow. Their book is open source and available for free at the link, and it is an incredible resource for further learning. 
+
+We will be loading five different datasets, three spatial, and one a tibble (i.e. a dataframe). All of the data is publicly available and comes from the King County data portal. King County is the largest county in the state of Washington and is home to the city of Seattle. King County does a really good job in providing public data and have excellent GIS data. We will be doing some exploratory data analysis involving sales of residential properties in 2018. The sales data originally comes from the [King County Assessors Office](https://info.kingcounty.gov/assessor/DataDownload/default.aspx). I already did some tidying and formatting to get the data prepared for the spatial analysis we are going to do today. The processed sales data can be found in the `workshop_data/` folder as a csv file `sales_data.csv`. 
+
+After loading the sales data, we will also load four different shapefiles into R as a Simple Feature collection. For all intents and purposes this can be thought of as a spatial dataframe. Essentially, it is a dataframe with a list-column named "geometry". The geometry list-column contains all of the spatial information realting to the row. You can convert a spatial dataframe to a regular vanilla dataframe with either `as.data.frame()` or `as_tibble()` within the tidyverse. 
+
+Before moving further with the actual data, a description of the spatial data we are working with is necessary. All of the four shapefiles are from the [King County GIS Data Portal](https://www5.kingcounty.gov/gisdataportal/). One of the shapefiles contains the border of every city incorporated in King County. The other contains the border of the zipcodes within King County. Lastly, we also have point data for all of the water treatment plants in King County, as well as all of the Farmer's Markets. Once we have all of the data loaded we can begin working through our analysis. 
+
+```{r load packages}
+library(dplyr) # general data processing + pipe operator
+library(sf) # spatial analysis
+library(ggplot2) # plotting
+library(leaflet) # interactive mapping
+```
+
+## Load Data
+
+We will start by reading in the assessor's data which is a regular csv file. I have already done some preprocessing on the raw assessors data to make it more convenient for analysis during this workshop.
+```{r load non-spatial data}
+# load king county sales data
+kc_sales <- read.csv(file = "data/sales_data.csv", stringsAsFactors = FALSE)
+
+summary(kc_sales)
+```
+
+
+After loading the king county sales data from the assessor, we now move toward loading the spatial data into memory. This will be our first introduction to the `sf` package and the simple features class. The functions in the `sf` package all use the "st_" prefix, so this should be a good visual indicator that we will be performing some spatial computations. We will begin by reading in the data using the `st_read` function. Here we will work through the basics of CRS and afterwards introduce our first mapping/plotting technique.
+
+* [CRS reference in R](https://www.nceas.ucsb.edu/~frazier/RSpatialGuides/OverviewCoordinateReferenceSystems.pdf)
+
+* [Finding which CRS to use for King County Data](https://gis.stackexchange.com/questions/280871/loading-nad83-and-wgs84-layers-together-in-qgis)
+```{r load spatial data // explore crs}
+# Cities
+cities <- st_read("data/spatial_data/city_kc/city_kc.shp", crs = 2926)
+cities <- st_transform(cities, crs = 4269)
+
+# Zipcodes
+zipcodes <- st_read("data/spatial_data/zipcode/zipcode.shp", crs = 2926, quiet = TRUE)
+zipcodes <- st_transform(zipcodes, crs = 4269)
+
+# Water Treatment Plants
+water_treatment_plants <- st_read("data/spatial_data/plant/plant.shp", crs = 2926, quiet = TRUE)
+water_treatment_plants <- st_transform(water_treatment_plants, crs = 4269)
+
+## Example writing shapes to file
+# st_write(water_treatment_plants, "test.shp")
+
+# Farmers Market
+farmers_market <- st_read(
+  "data/spatial_data/farmers_markets/farmers_markets.shp", 
+  crs = 2926, 
+  quiet = TRUE
+  )
+
+farmers_market <- st_transform(farmers_market, crs = 4269)
+
+# to perform computations across different spatial objects the crs has to match
+cities_in_4326 <- st_read("data/spatial_data/city_kc/city_kc.shp", crs = 2926, quiet = TRUE)
+cities_in_4326 <- st_transform(cities, crs = 4326)
+
+st_join(head(cities), head(zipcodes)) # no error
+st_join(head(cities_in_4326), head(zipcodes)) # error
+```
+
+## Exploratory Data Analysis
+
+Now that all of the data has been loaded, lets begin to explore the datasets. We will examine the first few rows of each dataset to get an idea about the type of data that exists in each dataset. Additionally, we will want to map the data in some format to be able to inspect the data visually. Since our data has an extra dimension (spatial) we need to be able to do exploratory data analysis on that extra dimension. We will introduce the first of our three plotting/mapping techniques which is the base plot method (I apologize for using plotting/mapping interchangeably). 
+```{r explore the spatial data // base plotting}
+# cities in king county // polygon
+head(cities)
+
+# zipcodes in king county // polygon
+head(zipcodes)
+
+# water treatment plants in king county // point
+head(water_treatment_plants)
+
+# farmers markets // point
+head(farmers_market)
+
+plot(st_geometry(water_treatment_plants), axes = TRUE)
+plot(st_geometry(cities), axes = TRUE)
+
+plot(cities)
+plot(cities["CITYNAME"], axes = TRUE)
+
+# why is the light green color being used across non-contigous shapes?
+# what is the largest city in the data?
+cities %>% 
+  arrange(desc(SHAPE_area))
+```
+
+Looking at the output above, we get some clarity about why we saw the light green color in non-contigous shapes. The city is King County itself, meaning that the area is likely unincorporated county land. For the sake of our analysis this isn't particularly important, but if the policy we were analyzing had different implications in cities vs. unincorporated county land it could be very important. 
+
+The next step is to return to the assessors data, which I will refer to as the sales data from here on out. It is at this point where I will also introduce the central question of our analysis. Can we predict the sale price of a residential property based upon that property's proximity to water treatment plants and farmer's markets? 
+
+In order to answer this question we will need to measure the spatial relationship between the properties and our spatial controls. This means that we need to convert the sales data to a spatial format. Looking at the data we see that our dataset contains latitude and longitude data. If our data has lat/lng we can convert it from a data.frame to a sf object. Often times the data we will be working with will not have coordinate data. The only spatial data will be an address, and it is in these situations where we most often will be required to geocode the data. Geocoding is the process of converting between addresses to lat/lng and vice versa. Geocoding is outside of the scope of this workshop but it is a simple task. However, geocoding requires using an API (mostly commonly the google maps API) and there is a monteray cost with using that service. If you're interested in geocoding or learning more about it I recommend looking into the [`ggmap` package](https://github.com/dkahle/ggmap). In the package there is a function called `mutate_geocode()` which is compatable with dplyr and very convenient for geocoding. 
+
+Since our data includes coordinates we can convert the data to a spatial object. We will set the crs to be 4269 which is the standard crs for lat/lng data. In the call to `st_as_sf()` notice the `remove = FALSE` arguement. The deault is TRUE and in that case the original lat/lng columns will be dropped. I prefer to keep the lat/lng as a reference because we often will perform a geometric operation which will change the nature of the shapes. 
+```{r convert sales data to spatial object and visualize}
+sales_shape <- st_as_sf(kc_sales, coords = c("lon", "lat"), crs = 4269, remove = FALSE)
+
+plot(st_geometry(sales_shape), axes = TRUE)
+
+# what is the area of our shapes?
+st_area(sales_shape) %>% 
+  head()
+
+# point data doesn't have any area, compare to zipcodes which do have area given they're polygons
+st_area(zipcodes) %>% 
+  head()
+```
+
+## What is the median price in each zipcode?
+
+Now that are data is in a spatial format we can begin to formulate and answer spatial questions about the data. This is a really common workflow where we have point data and we want to do a spatial aggregation to some shape. Here we may want to know the sales characteristics for each zipcode. Since we don't have any features in our data with information about the address or the zipcode itself, we will need to identify which zipcode each property is in spatially. Here we will introduce the concept of the spatial join which is one of the most frequent tasks in any spatial analysis. Since we have the shapes of all the zipcodes in King County we can join those shapes to our properties for our analysis. 
+```{r estimate median sales price by zipcode}
+sales_shape_with_zip <- st_join(sales_shape, zipcodes, join = st_within)
+
+median_sale_price_by_zipcode <- sales_shape_with_zip %>% 
+  as_tibble() %>% 
+  group_by(ZIPCODE) %>% 
+  summarise(median_sale_price = median(sale_price),
+            transactions = n())
+
+median_sale_price_by_zipcode %>% 
+  ggplot() +
+  geom_bar(aes(x = ZIPCODE, y = median_sale_price), fill = "forestgreen", stat = "identity") +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(x = "Zip Codes", 
+       y = "Median Sale Price", 
+       title = "2018 King County Residential Property Transactions") +
+  theme(
+    axis.text.x = element_text(angle = 270), 
+    plot.title = element_text(hjust = 0.5)
+    )
+```
+
+The above chart isn't very pleasant to look at, and additionally it doesn't really capture the relevant spatial information. There are ways in which we could improve the presentation of the plot but really what we want to do is create a cartogram. We want to create the same plot but preserve the relevant spatial relationships. Here we will introduce plotting using ggplot. Since the above data is a regular dataframe, we need to join the spatial dataframe containing the zipcodes with our calculated median sale price by zipcodes. 
+
+```{r plot the data spatially with ggplot}
+median_sale_price_by_zipcode_shape <- inner_join(zipcodes, median_sale_price_by_zipcode)
+
+median_sale_price_by_zipcode_shape %>% 
+  ggplot() +
+  geom_sf(aes(fill = median_sale_price)) +
+  labs(title = "2018 King County Residential Property Transactions",
+       fill = "Median Sale Price")
+```
+
+Now that we can see the median sale price by zipcodes lets repeat the same process but this time calculate the median sale price by city. When we create the same initial bar chart we see that the chart is a lot more informative. In my experience, moving to a higher spatial aggregation reduces the importance of the spatial characteristics and in these cases sometimes regular data visualizations can be just as effective as a cartogram. In this example, I don't think making a cartogram would add a lot of information to this existing plot.   
+
+```{r plot median sale price by city}
+sales_shape_with_cities <- st_join(sales_shape, cities, join = st_within)
+
+median_sale_price_by_ctiy <- sales_shape_with_cities %>% 
+  as_tibble() %>% 
+  mutate_if(is.factor, as.character) %>% 
+  group_by(CITYNAME) %>% 
+  summarise(median_sale_price = median(sale_price),
+            transactions = n())
+
+median_sale_price_by_ctiy %>% 
+  filter(!is.na(CITYNAME)) %>% 
+  ggplot() +
+  geom_bar(aes(x = CITYNAME, y = median_sale_price), fill = "forestgreen", stat = "identity") +
+  geom_text(aes(x = CITYNAME, y = median_sale_price, label = transactions), vjust = -0.3) +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(x = " ",
+       y = "Median Sale Price", 
+       title = "2018 King County Residential Property Transactions") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90), 
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+## Estimate Spatial Relationships
+
+Now we turn towards adding new spatial features to our dataset. The goal is to use these features to estimate a model that will predict the transaction prices of residential properties. Here we will introduce `st_distance()` to estimate the distance between shapes. Here we will calculate the distance from each property to the nearest farmer's market. This distance will be used as one of the features in our model. 
+
+```{r calculate the distance to nearest farmers market}
+sales_shape <- st_join(sales_shape, zipcodes, join = st_within)
+
+min_distance_to_farmers_market <- st_distance(sales_shape, farmers_market) %>%
+  t() %>%
+  as.data.frame() %>%
+  summarise_all(min) %>%
+  t() %>%
+  as.data.frame() %>%
+  pull()
+
+sales_shape <- sales_shape %>%
+  mutate(dist_to_nearest_farmers_market_in_meters = min_distance_to_farmers_market)
+```
+
+Now that we have estimated the distance to the nearest farmer's market for each property, lets quickly visualize the realtionship between distance and sales price. This will require an ad hoc conversion from the metric system to the U.S. standard system for interpretability. I will also filter on transactions less than $3,000,000 to plot transactions that aren't outliers.
+
+```{r plot relationship between distance to farmers market and sales price}
+# convert metric units
+meters_in_mile <- 1609.34
+
+sales_shape %>% 
+  mutate(
+    dist_to_nearest_farmers_market_in_miles = dist_to_nearest_farmers_market_in_meters / meters_in_mile
+    ) %>%
+  filter(sale_price < 3000000 & dist_to_nearest_farmers_market_in_miles < 10) %>% 
+  ggplot() +
+  geom_point(aes(x = dist_to_nearest_farmers_market_in_miles, y = sale_price), alpha = 0.1) +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(x = "Miles from Nearest Farmer's Market", y = "Sale Price")
+```
+
+Time to add an additional spatial control. This time we will estimate the distance from each property to the nearest water treatment plant. In the farmer's market case we used a continous variable but for this calculation we will estimate the distance in bins. Often times binning the distance will improve the quality of your model but it really depends on the specifics of the data and the specific spatial relationship. If we are measuring the distance from a property to the nearest transit stop, there is a big difference between that distance being walkable or requiring a car. The marginal 250 meters likely doesn't have an impact in that case, and binning would be appropriate. Other situations, like distance from properties to the beach might be better modeled by a continous feature. 
+
+```{r calculate binned distances to water treatment plants}
+# before applying a buffer, we need to change the projection
+water_treatment_plants <- st_transform(water_treatment_plants, crs = 3857)
+
+water_treatment_plants_half_mile_buffer <- st_buffer(water_treatment_plants, dist = meters_in_mile / 2) %>% 
+  st_union() %>% 
+  st_sf() %>% 
+  mutate(within_half_mile_water_treatment = TRUE)
+
+water_treatment_plants_1_mile_buffer <- st_buffer(water_treatment_plants, dist = meters_in_mile) %>% 
+  st_union() %>% 
+  st_sf() %>% 
+  mutate(within_1_mile_water_treatment = TRUE)
+
+water_treatment_plants_5_mile_buffer <- st_buffer(water_treatment_plants, dist = meters_in_mile * 5) %>% 
+  st_union() %>% 
+  st_sf() %>% 
+  mutate(within_5_mile_water_treatment = TRUE)
+
+water_treatment_plants_5_mile_buffer <- st_difference(
+  water_treatment_plants_5_mile_buffer, water_treatment_plants_1_mile_buffer
+  ) %>% 
+  select(within_5_mile_water_treatment)
+
+water_treatment_plants_1_mile_buffer <- st_difference(
+  water_treatment_plants_1_mile_buffer, water_treatment_plants_half_mile_buffer
+  ) %>% 
+  select(within_1_mile_water_treatment)
+
+# convert crs to that of the sales_shape
+water_treatment_plants_half_mile_buffer <- st_transform(
+  water_treatment_plants_half_mile_buffer, 
+  crs = st_crs(sales_shape)
+  )
+
+water_treatment_plants_1_mile_buffer <- st_transform(
+  water_treatment_plants_1_mile_buffer, 
+  crs = st_crs(sales_shape)
+  )
+
+water_treatment_plants_5_mile_buffer <- st_transform(
+  water_treatment_plants_5_mile_buffer, 
+  crs = st_crs(sales_shape)
+  )
+```
+
+## Introduce Leaflet
+
+This is a good point to introduce our third mapping/plotting method and my favorite of the three. We will be using the leaflet package to create interactive maps which have base layers to help us identify the locations in which we are mapping. I find the leaflet syntax a little strange but it works very well with piping. Here we will add some complexity slowly to build up to a more sophisticated leaflet map. Hopefully this will serve as a good introduction to leaflet and will encourage you to try making your own interactive maps.
+
+```{r leaflet primer}
+# map the points data // introduce tiles
+water_treatment_plants %>% 
+  st_transform(crs = 4326) %>% # leaflet crs is in 4326
+  leaflet() %>% 
+  addCircles() %>%
+  # addMarkers() %>% 
+  addTiles()
+
+# map polygons
+water_treatment_plants_half_mile_buffer %>% 
+  st_transform(crs = 4326) %>%
+  leaflet() %>% 
+  addPolygons() %>%
+  addTiles()
+
+# go over the arguements to addPolygons()
+median_sale_price_by_zipcode_shape %>% 
+  st_transform(crs = 4326) %>%
+  leaflet() %>% 
+  addPolygons(
+    stroke = TRUE,
+    color = "black",
+    weight = 1,
+    smoothFactor = 0.2,
+    opacity = 2,
+    fillOpacity = 0.6,
+    fillColor = "cyan",
+    highlightOptions = highlightOptions(color = "black", weight = 2, bringToFront = TRUE)
+  ) %>%
+  addTiles()
+
+# adding a palette, a label, and a legend
+# library(htmltools)
+# 
+# zipcode_pal <- colorNumeric(
+#   palette = "Purples", 
+#   domain = median_sale_price_by_zipcode_shape$median_sale_price, na.color = "gray"
+#   )
+# 
+# zipcode_label <- as.list(paste0(
+#   "Zipcode: ", median_sale_price_by_zipcode_shape$ZIPCODE, "<br>", "<br>",
+#   "Median Sale Price: ", 
+#   scales::dollar(median_sale_price_by_zipcode_shape$median_sale_price), "<br>", "<br>",
+#   "Number of Transactions: ", 
+#   median_sale_price_by_zipcode_shape$transactions
+# ))
+# 
+# median_sale_price_by_zipcode_shape %>% 
+#   st_transform(crs = 4326) %>%
+#   leaflet() %>% 
+#   addPolygons(
+#     stroke = TRUE,
+#     color = "black",
+#     weight = 1,
+#     smoothFactor = 0.2,
+#     opacity = 2,
+#     fillOpacity = 0.7,
+#     fillColor = ~zipcode_pal(median_sale_price),
+#     label = lapply(zipcode_label, HTML),
+#     highlightOptions = highlightOptions(color = "black", weight = 2, bringToFront = TRUE)
+#   ) %>%
+#   addTiles() %>% 
+#   addLegend(
+#     "bottomright", 
+#     pal = zipcode_pal, 
+#     values = ~median_sale_price, 
+#     title = "Median Sale Price (2018)",
+#     labFormat = labelFormat(
+#       prefix = "$", 
+#       suffix = "", 
+#       between = ""
+#       ),
+#     opacity = 1
+#     )
+# 
+# # add an additional layer and group controls
+# farmers_market_label <- as.list(paste0(
+#   "Farmer's Market: ", farmers_market$NAME, "<br>",
+#   "Start Date: ", farmers_market$START_DATE, "<br>",
+#   "End Date: ", farmers_market$END_DATE, "<br>",
+#   "Days of the Week: ", farmers_market$DAYOFWEEK, "<br>", 
+#   "Start Time: ", farmers_market$STARTTIME, "<br>", 
+#   "Closing Time: ", farmers_market$ENDTIME
+# ))
+# 
+# leaflet() %>% 
+#   addPolygons(
+#     data = st_transform(median_sale_price_by_zipcode_shape, crs = 4326),
+#     stroke = TRUE,
+#     color = "black",
+#     weight = 1,
+#     smoothFactor = 0.2,
+#     opacity = 2,
+#     fillOpacity = 0.7,
+#     fillColor = ~zipcode_pal(median_sale_price),
+#     label = lapply(zipcode_label, HTML),
+#     highlightOptions = highlightOptions(color = "black", weight = 2, bringToFront = TRUE),
+#     group = "Median Sale Price"
+#   ) %>%
+#   addTiles() %>% 
+#   addMarkers(
+#     data = st_transform(farmers_market, crs = 4326),
+#     popup = lapply(farmers_market_label, HTML),
+#     group = "Farmer's Market"
+#   ) %>% 
+#   addLegend(
+#     data = st_transform(median_sale_price_by_zipcode_shape, crs = 4326),
+#     "bottomright", 
+#     pal = zipcode_pal, 
+#     values = ~median_sale_price, 
+#     title = "Median Sale Price (2018)",
+#     labFormat = labelFormat(
+#       prefix = "$", 
+#       suffix = "", 
+#       between = ""
+#       ),
+#     opacity = 1
+#     ) %>% 
+#   addLayersControl(
+#           baseGroups = c("Median Sale Price", "Farmer's Market"),
+#           options = layersControlOptions(collapsed = FALSE)
+#         )
+```
+
+Now that we have verified that our buffers are correct, lets join the water treatment buffers to the sales data. We will then do some processing to prepare the data for our modeling effort. It is common to convert year built to be building age as the interpretation of the coefficient in the model is a lot more intuitive. 
+
+```{r join the water treament buffers to the sales data}
+sales_shape <- st_join(sales_shape, water_treatment_plants_half_mile_buffer, join = st_within)
+sales_shape <- st_join(sales_shape, water_treatment_plants_1_mile_buffer, join = st_within)
+sales_shape <- st_join(sales_shape, water_treatment_plants_5_mile_buffer, join = st_within)
+
+# convert the missing values in the within columns to be 0
+sales_shape <- sales_shape %>% 
+  mutate(
+    within_half_mile_water_treatment = if_else(
+      is.na(within_half_mile_water_treatment) == TRUE, FALSE, within_half_mile_water_treatment
+      ),
+    within_1_mile_water_treatment = if_else(
+      is.na(within_1_mile_water_treatment) == TRUE, FALSE, within_1_mile_water_treatment
+      ),
+    within_5_mile_water_treatment = if_else(
+      is.na(within_5_mile_water_treatment) == TRUE, FALSE, within_5_mile_water_treatment
+      )
+    )
+
+sales_shape <- sales_shape %>% 
+  mutate(building_age = 2019 - year_built) %>% 
+  select(-year_built)
+```
+
+## Estimate Model
+
+Now we finally estimate our model and evaluate its fit. The goal was to answer the question of whether or not we can predict the price of a property transaction based on the distance to farmers markets and water treatment plants. 
+
+```{r fit our model}
+sale_price_model <- lm(
+  formula = sale_price ~ building_age
+    + dist_to_nearest_farmers_market_in_meters 
+    + within_half_mile_water_treatment 
+    + within_1_mile_water_treatment 
+    + within_5_mile_water_treatment, 
+  data = sales_shape
+  )
+
+summary(sale_price_model)
+```
+
